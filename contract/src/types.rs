@@ -84,6 +84,29 @@ pub struct Trade {
 }
 
 // ---------------------------------------------------------------------------
+// Arbitrator Reputation
+// ---------------------------------------------------------------------------
+
+/// Reputation record stored per registered arbitrator.
+/// Ratings are 1–5 stars; stored as cumulative sum + count for an average.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArbitratorReputation {
+    /// Total disputes assigned to this arbitrator
+    pub total_disputes: u32,
+    /// Disputes fully resolved (any outcome)
+    pub resolved_count: u32,
+    /// Resolutions that released funds to the buyer
+    pub buyer_wins: u32,
+    /// Resolutions that released funds to the seller
+    pub seller_wins: u32,
+    /// Sum of all star ratings received (1–5 per rating)
+    pub rating_sum: u32,
+    /// Number of ratings received
+    pub rating_count: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Trade Templates
 // ---------------------------------------------------------------------------
 

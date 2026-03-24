@@ -1,7 +1,7 @@
 use soroban_sdk::{Address, Env};
 
 use crate::errors::ContractError;
-use crate::types::{TierConfig, Trade, TradeTemplate, UserTierInfo};
+use crate::types::{ArbitratorReputation, TierConfig, Trade, TradeTemplate, UserTierInfo};
 
 const INITIALIZED: &str = "INIT";
 const ADMIN: &str = "ADMIN";
@@ -16,6 +16,8 @@ const TIER_CONFIG: &str = "TIER_CFG";
 const USER_TIER_PREFIX: &str = "UTIER";
 const TEMPLATE_COUNTER: &str = "TMPL_CTR";
 const TEMPLATE_PREFIX: &str = "TMPL";
+const ARB_REP_PREFIX: &str = "ARB_REP";
+const ARB_RATED_PREFIX: &str = "ARB_RTD";
 
 // Initialization
 pub fn is_initialized(env: &Env) -> bool {
@@ -181,4 +183,36 @@ pub fn get_template(env: &Env, template_id: u64) -> Result<TradeTemplate, crate:
         .persistent()
         .get(&key)
         .ok_or(crate::errors::ContractError::TemplateNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// Arbitrator Reputation
+// ---------------------------------------------------------------------------
+
+pub fn get_arbitrator_reputation(env: &Env, arbitrator: &Address) -> ArbitratorReputation {
+    let key = (ARB_REP_PREFIX, arbitrator);
+    env.storage().persistent().get(&key).unwrap_or(ArbitratorReputation {
+        total_disputes: 0,
+        resolved_count: 0,
+        buyer_wins: 0,
+        seller_wins: 0,
+        rating_sum: 0,
+        rating_count: 0,
+    })
+}
+
+pub fn save_arbitrator_reputation(env: &Env, arbitrator: &Address, rep: &ArbitratorReputation) {
+    let key = (ARB_REP_PREFIX, arbitrator);
+    env.storage().persistent().set(&key, rep);
+}
+
+/// Returns true if `rater` has already submitted a rating for this trade's arbitrator.
+pub fn has_rated(env: &Env, trade_id: u64, rater: &Address) -> bool {
+    let key = (ARB_RATED_PREFIX, trade_id, rater);
+    env.storage().persistent().has(&key)
+}
+
+pub fn mark_rated(env: &Env, trade_id: u64, rater: &Address) {
+    let key = (ARB_RATED_PREFIX, trade_id, rater);
+    env.storage().persistent().set(&key, &true);
 }

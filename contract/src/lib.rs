@@ -16,15 +16,16 @@ use types::{METADATA_MAX_ENTRIES, METADATA_MAX_VALUE_LEN};
 
 pub use errors::ContractError;
 pub use types::{
-    DisputeResolution, MetadataEntry, TierConfig, TemplateTerms, TemplateVersion,
-    Trade, TradeMetadata, TradeStatus, TradeTemplate, UserTier, UserTierInfo,
+    ArbitratorReputation, DisputeResolution, MetadataEntry, TierConfig, TemplateTerms,
+    TemplateVersion, Trade, TradeMetadata, TradeStatus, TradeTemplate, UserTier, UserTierInfo,
 };
 
 use storage::{
     get_accumulated_fees, get_admin, get_fee_bps, get_trade, get_trade_counter, get_usdc_token,
-    has_arbitrator, has_initialized, increment_trade_counter, is_initialized, is_paused,
-    remove_arbitrator, save_arbitrator, save_trade, set_accumulated_fees, set_admin, set_fee_bps,
-    set_initialized, set_paused, set_trade_counter, set_usdc_token,
+    has_arbitrator, has_initialized, has_rated, increment_trade_counter, is_initialized, is_paused,
+    mark_rated, remove_arbitrator, save_arbitrator, save_arbitrator_reputation, save_trade,
+    set_accumulated_fees, set_admin, set_fee_bps, set_initialized, set_paused, set_trade_counter,
+    set_usdc_token,
 };
 
 fn require_not_paused(env: &Env) -> Result<(), ContractError> {
@@ -264,6 +265,12 @@ impl StellarEscrowContract {
         caller.require_auth();
         trade.status = TradeStatus::Disputed;
         save_trade(&env, trade_id, &trade);
+        // Increment total_disputes on the arbitrator's reputation record
+        if let Some(ref arb) = trade.arbitrator {
+            let mut rep = storage::get_arbitrator_reputation(&env, arb);
+            rep.total_disputes = rep.total_disputes.saturating_add(1);
+            save_arbitrator_reputation(&env, arb, &rep);
+        }
         events::emit_dispute_raised(&env, trade_id, caller);
         Ok(())
     }
@@ -300,8 +307,57 @@ impl StellarEscrowContract {
         let current_fees = get_accumulated_fees(&env)?;
         let new_fees = current_fees.checked_add(trade.fee).ok_or(ContractError::Overflow)?;
         set_accumulated_fees(&env, new_fees);
+
+        // Update arbitrator reputation stats
+        let mut rep = storage::get_arbitrator_reputation(&env, &arbitrator);
+        rep.resolved_count = rep.resolved_count.saturating_add(1);
+        rep.total_disputes = rep.total_disputes.saturating_add(1);
+        match resolution {
+            DisputeResolution::ReleaseToBuyer => rep.buyer_wins = rep.buyer_wins.saturating_add(1),
+            DisputeResolution::ReleaseToSeller => rep.seller_wins = rep.seller_wins.saturating_add(1),
+        }
+        save_arbitrator_reputation(&env, &arbitrator, &rep);
+        events::emit_arb_rep_updated(&env, arbitrator.clone(), rep.resolved_count, rep.rating_sum, rep.rating_count);
         events::emit_dispute_resolved(&env, trade_id, resolution, recipient);
         Ok(())
+    }
+
+    /// Submit a 1–5 star rating for the arbitrator of a resolved dispute.
+    /// Only the buyer or seller of the trade may rate, once each.
+    pub fn rate_arbitrator(env: Env, trade_id: u64, rater: Address, stars: u32) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if stars < 1 || stars > 5 {
+            return Err(ContractError::InvalidRating);
+        }
+        rater.require_auth();
+        let trade = get_trade(&env, trade_id)?;
+        // Only buyer or seller may rate
+        if rater != trade.buyer && rater != trade.seller {
+            return Err(ContractError::Unauthorized);
+        }
+        // Trade must have been disputed (and resolved) — status check
+        if trade.status != TradeStatus::Disputed {
+            return Err(ContractError::InvalidStatus);
+        }
+        let arbitrator = trade.arbitrator.ok_or(ContractError::NoArbitrator)?;
+        if has_rated(&env, trade_id, &rater) {
+            return Err(ContractError::AlreadyRated);
+        }
+        mark_rated(&env, trade_id, &rater);
+        let mut rep = storage::get_arbitrator_reputation(&env, &arbitrator);
+        rep.rating_sum = rep.rating_sum.saturating_add(stars);
+        rep.rating_count = rep.rating_count.saturating_add(1);
+        save_arbitrator_reputation(&env, &arbitrator, &rep);
+        events::emit_arb_rated(&env, arbitrator.clone(), trade_id, rater, stars);
+        events::emit_arb_rep_updated(&env, arbitrator, rep.resolved_count, rep.rating_sum, rep.rating_count);
+        Ok(())
+    }
+
+    /// Query reputation stats for an arbitrator.
+    pub fn get_arbitrator_reputation(env: Env, arbitrator: Address) -> ArbitratorReputation {
+        storage::get_arbitrator_reputation(&env, &arbitrator)
     }
 
     /// Cancel an unfunded trade
