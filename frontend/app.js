@@ -981,6 +981,11 @@
         initWalletUI();
         restoreWalletConnection();
 
+        // Initialize disputes
+        if (window.DisputeManager) {
+            window.DisputeManager.initDisputeUI();
+        }
+
         // Initialize high contrast toggle
         const contrastToggle = $('#contrast-toggle');
         if (contrastToggle) {

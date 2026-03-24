@@ -377,6 +377,117 @@
             </div>
         </section>
 
+        <!-- Disputes Section -->
+        <section id="disputes" aria-labelledby="disputes-heading" class="section">
+            <div class="container">
+                <h2 id="disputes-heading" class="section-title">Dispute Management</h2>
+                
+                <div class="disputes-header">
+                    <button 
+                        id="raise-dispute-btn"
+                        type="button"
+                        class="btn btn-primary"
+                        aria-label="Raise a new dispute"
+                    >
+                        Raise Dispute
+                    </button>
+                </div>
+
+                <!-- Disputes List -->
+                <div class="disputes-container" role="region" aria-label="Disputes list">
+                    <div id="disputes-list" class="disputes-list">
+                        <p class="empty-state">No disputes found</p>
+                    </div>
+                </div>
+
+                <!-- Dispute Details -->
+                <div id="dispute-details" class="dispute-details" role="region" aria-label="Dispute details">
+                </div>
+            </div>
+        </section>
+
+        <!-- Dispute Modal -->
+        <div id="dispute-modal" class="modal" hidden role="dialog" aria-labelledby="dispute-modal-title" aria-modal="true">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="dispute-modal-title">Raise Dispute</h3>
+                    <button 
+                        id="dispute-modal-close"
+                        type="button"
+                        class="btn btn-close"
+                        aria-label="Close dialog"
+                    >
+                        ✕
+                    </button>
+                </div>
+
+                <form id="dispute-form" class="dispute-form">
+                    <div class="form-group">
+                        <label for="dispute-trade-id" class="form-label">Trade ID *</label>
+                        <input 
+                            type="number"
+                            id="dispute-trade-id"
+                            class="form-input"
+                            required
+                            min="1"
+                            aria-describedby="trade-id-help"
+                        >
+                        <span id="trade-id-help" class="form-help">Enter the trade ID to dispute</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="dispute-reason" class="form-label">Reason for Dispute *</label>
+                        <textarea 
+                            id="dispute-reason"
+                            class="form-textarea"
+                            required
+                            rows="4"
+                            placeholder="Describe the issue..."
+                            aria-describedby="reason-help"
+                        ></textarea>
+                        <span id="reason-help" class="form-help">Provide details about the dispute</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="evidence-input" class="form-label">Upload Evidence</label>
+                        <input 
+                            type="file"
+                            id="evidence-input"
+                            class="form-input"
+                            multiple
+                            accept=".jpg,.jpeg,.png,.pdf,.txt"
+                            aria-describedby="evidence-help"
+                        >
+                        <span id="evidence-help" class="form-help">
+                            Supported: JPG, PNG, PDF, TXT (max 5MB each)
+                        </span>
+                    </div>
+
+                    <div id="evidence-list" class="evidence-list">
+                        <p class="empty-state">No evidence uploaded</p>
+                    </div>
+
+                    <div class="form-actions">
+                        <button 
+                            type="submit"
+                            class="btn btn-primary"
+                            aria-label="Submit dispute"
+                        >
+                            Submit Dispute
+                        </button>
+                        <button 
+                            type="button"
+                            class="btn btn-secondary"
+                            id="dispute-cancel-btn"
+                            aria-label="Cancel"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         <!-- Help Center Section -->
         <section id="help" aria-labelledby="help-heading" class="section">
             <div class="container">
@@ -588,6 +699,7 @@
     <div id="toast-container" class="toast-container" role="alert" aria-live="assertive" aria-label="Notifications"></div>
 
     <script src="wallet.js"></script>
+    <script src="disputes.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
