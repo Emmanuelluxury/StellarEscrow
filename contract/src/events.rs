@@ -131,6 +131,15 @@ pub fn emit_trade_from_template(env: &Env, trade_id: u64, template_id: u64, vers
         .publish((symbol_short!("tmpl_tr"),), (trade_id, template_id, version));
 }
 
+pub fn emit_arb_rated(env: &Env, arbitrator: Address, trade_id: u64, rater: Address, stars: u32) {
+    env.events()
+        .publish((symbol_short!("arb_rate"),), (arbitrator, trade_id, rater, stars));
+}
+
+pub fn emit_arb_rep_updated(env: &Env, arbitrator: Address, resolved_count: u32, rating_sum: u32, rating_count: u32) {
+    env.events()
+        .publish((symbol_short!("arb_rep"),), (arbitrator, resolved_count, rating_sum, rating_count));
+}
 pub fn emit_time_released(env: &Env, trade_id: u64, seller: Address, payout: u64) {
     env.events()
         .publish((symbol_short!("time_rel"),), (trade_id, seller, payout));

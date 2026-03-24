@@ -24,6 +24,12 @@ pub enum ContractError {
     TemplateNameTooLong = 17,
     TemplateVersionLimitExceeded = 18,
     TemplateAmountMismatch = 19,
+    /// Star rating must be 1–5
+    InvalidRating = 20,
+    /// Caller already rated this arbitrator for this trade
+    AlreadyRated = 21,
+    /// Trade has no arbitrator to rate
+    NoArbitrator = 22,
     /// buyer_bps in a Partial resolution must be 0–10000
     InvalidSplitBps = 20,
     InvalidExpiry = 20,
