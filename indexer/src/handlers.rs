@@ -1,6 +1,5 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
     response::Json,
     response::Response,
 };
@@ -9,6 +8,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::health::HealthState;
 use crate::models::{
     Event, EventQuery, EventStats, IndexerStatus, PaginatedResponse, ReplayRequest, StatsResponse,
     WebSocketMessage,
@@ -21,6 +21,7 @@ use crate::models::{
     SuggestionQuery, TradeSearchQuery, WebSocketMessage,
 };
 use crate::websocket::WebSocketManager;
+use crate::{database::Database, models::Event, models::PagedResponse};
 use crate::fraud_service::FraudDetectionService;
 use crate::{database::Database, models::Event};
 
@@ -34,7 +35,11 @@ pub async fn api_index() -> Json<serde_json::Value> {
         "name": "StellarEscrow Indexer API",
         "version": "1.0.0",
         "endpoints": {
-            "health":          "GET  /health",
+            "health_live":     "GET  /health/live",
+            "health_ready":    "GET  /health/ready",
+            "health_metrics":  "GET  /health/metrics",
+            "health_alerts":   "GET  /health/alerts",
+            "status_page":     "GET  /status",
             "events":          "GET  /events?limit=20&offset=0&event_type=&trade_id=&from_ledger=&to_ledger=",
             "event_by_id":     "GET  /events/:id",
             "events_by_trade": "GET  /events/trade/:trade_id",
@@ -45,13 +50,6 @@ pub async fn api_index() -> Json<serde_json::Value> {
             "fraud_review":    "POST /fraud/review  {trade_id, status, reviewer, notes}",
             "help":            "GET  /help"
         }
-    }))
-}
-
-pub async fn health_check() -> Json<serde_json::Value> {
-    Json(json!({
-        "status": "healthy",
-        "timestamp": chrono::Utc::now()
     }))
 }
 
@@ -321,5 +319,6 @@ pub async fn update_fraud_review(
 pub struct AppState {
     pub database: Arc<Database>,
     pub ws_manager: Arc<WebSocketManager>,
+    pub health: HealthState,
     pub fraud_service: Arc<FraudDetectionService>,
 }
