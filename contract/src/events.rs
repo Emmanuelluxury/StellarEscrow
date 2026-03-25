@@ -141,6 +141,15 @@ pub struct EvInsClaimed            { pub v: u32, pub trade_id: u64, pub payout: 
 pub fn emit_trade_created(env: &Env, trade_id: u64, seller: Address, buyer: Address, amount: u64, currency: Address) {
     env.events().publish((cat_trade(), symbol_short!("created")), EvTradeCreated { v: EVENT_VERSION, trade_id, seller, buyer, amount, currency });
 }
+
+pub fn emit_compliance_failed(env: &Env, user: Address, reason: &soroban_sdk::String) {
+    env.events().publish((symbol_short!("compl_fail"),), (user, reason.clone()));
+}
+
+pub fn emit_compliance_passed(env: &Env, trade_id: u64, seller: Address, buyer: Address, amount: u64) {
+    env.events().publish((symbol_short!("compl_pass"),), (trade_id, seller, buyer, amount));
+}
+
 pub fn emit_trade_funded(env: &Env, trade_id: u64) {
     env.events().publish((cat_trade(), symbol_short!("funded")), EvTradeFunded { v: EVENT_VERSION, trade_id });
 }
