@@ -59,6 +59,18 @@ ws_reconnect_delay_ms = 3000
 max_events_in_feed = 100
 search_debounce_delay_ms = 300
 
+[analytics]
+retention_days = 90
+export_limit = 10000
+
+[backup]
+database_url = ""
+script_path = "scripts/backup.sh"
+backup_dir = "/var/backups/stellarescrow"
+s3_bucket = ""
+retention_days = 30
+interval_hours = 24
+alert_webhook = ""
 [compliance]
 kyc_provider_url = ""
 kyc_api_key = ""

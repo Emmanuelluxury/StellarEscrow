@@ -22,6 +22,9 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -40,8 +43,11 @@ services:
       RUST_LOG: info
       CDN_PURGE_URL: ${CDN_PURGE_URL:-}
       CDN_PURGE_TOKEN: ${CDN_PURGE_TOKEN:-}
+      STELLAR_ESCROW__CACHE__REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
@@ -216,6 +222,7 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   certbot_webroot:
   letsencrypt:
   backup_data:

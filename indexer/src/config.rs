@@ -26,6 +26,10 @@ pub struct Config {
     pub compliance: ComplianceConfig,
     #[serde(default)]
     pub monitoring: MonitoringConfig,
+    #[serde(default)]
+    pub analytics: AnalyticsConfig,
+    #[serde(default)]
+    pub backup: BackupConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +286,63 @@ pub struct IntegrationConfig {
     #[serde(default)]
     pub connectors: Vec<ConnectorConfig>,
 }
+
+// ---------------------------------------------------------------------------
+// Analytics config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AnalyticsConfig {
+    /// Retain analytics events for this many days (0 = forever)
+    #[serde(default = "default_analytics_retention")]
+    pub retention_days: u32,
+    /// Export max rows per request
+    #[serde(default = "default_export_limit")]
+    pub export_limit: u64,
+}
+
+fn default_analytics_retention() -> u32 { 90 }
+fn default_export_limit() -> u64 { 10_000 }
+
+// ---------------------------------------------------------------------------
+// Backup config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupConfig {
+    #[serde(default)]
+    pub database_url: String,
+    #[serde(default)]
+    pub script_path: Option<String>,
+    #[serde(default)]
+    pub backup_dir: Option<String>,
+    #[serde(default)]
+    pub s3_bucket: Option<String>,
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
+    /// How often to run scheduled backups (hours, 0 = disabled)
+    #[serde(default = "default_backup_interval")]
+    pub interval_hours: u64,
+    #[serde(default)]
+    pub alert_webhook: Option<String>,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            database_url: String::new(),
+            script_path: None,
+            backup_dir: None,
+            s3_bucket: None,
+            retention_days: 30,
+            interval_hours: 24,
+            alert_webhook: None,
+        }
+    }
+}
+
+fn default_retention_days() -> u32 { 30 }
+fn default_backup_interval() -> u64 { 24 }
 
 impl Config {
     /// Load config from a TOML file, then apply environment variable overrides.

@@ -13,6 +13,12 @@ use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
+mod analytics_service;
+mod backup_service;
+mod cache_service;
+mod compliance_service;
+mod monitoring_service;
+mod webhook_service;
 mod auth;
 mod cache;
 mod config;
@@ -59,6 +65,12 @@ use rate_limit::RateLimiter;
 use rate_limit_handlers::*;
 use storage::StorageService;
 use websocket::WebSocketManager;
+use analytics_service::AnalyticsService;
+use backup_service::BackupService;
+use cache_service::CacheService;
+use compliance_service::ComplianceService;
+use monitoring_service::MonitoringService;
+use webhook_service::WebhookService;
 
 #[derive(Parser)]
 #[command(name = "stellar-escrow-indexer")]
@@ -161,6 +173,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         database.clone(),
         config.monitoring.clone(),
     ));
+    let monitoring_loop = monitoring_service.clone();
+    tokio::spawn(async move { monitoring_loop.run_alert_loop().await; });
+
+    // Initialize Analytics Service
+    let analytics_service = Arc::new(AnalyticsService::new(
+        database.clone(),
+        config.analytics.clone(),
+    ));
+
+    // Initialize Cache Service
+    let cache_service = Arc::new(CacheService::new(config.cache.clone()).await);
+
+    // Initialize Backup Service
+    let mut backup_config = config.backup.clone();
+    if backup_config.database_url.is_empty() {
+        backup_config.database_url = config.database.url.clone();
+    }
+    let backup_service = Arc::new(BackupService::new(database.clone(), backup_config));
+    if config.backup.interval_hours > 0 {
+        let sched = backup_service.clone();
+        tokio::spawn(async move { sched.run_scheduler().await; });
+    }
+
+    // Initialize Webhook Service
+    let webhook_service = Arc::new(WebhookService::new(database.clone()));
+    webhook_service.load_endpoints().await;
 
     // Start alert evaluation loop in background
     let monitoring_loop = monitoring_service.clone();
@@ -266,6 +304,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Integrations
         .route("/integrations/stats", get(get_integration_stats))
         .route("/integrations/log", get(get_integration_log))
+        // Analytics
+        .route("/analytics/dashboard", get(get_analytics_dashboard))
+        .route("/analytics/realtime", get(get_analytics_realtime))
+        .route("/analytics/export", get(export_analytics))
+        // Cache
+        .route("/cache/stats", get(get_cache_stats))
+        .route("/cache/invalidate", post(invalidate_cache))
+        // Backup
+        .route("/backup/trigger", post(trigger_backup))
+        .route("/backup/status", get(get_backup_status))
+        .route("/backup/history", get(get_backup_history))
+        .route("/backup/recovery-plan", get(get_recovery_plan))
+        // Webhooks
+        .route("/webhooks", post(register_webhook).get(list_webhooks))
+        .route("/webhooks/:id", delete(deactivate_webhook))
+        .route("/webhooks/deliveries", get(get_webhook_deliveries))
+        .route("/webhooks/stats", get(get_webhook_stats))
         .route("/ws", get(ws_handler))
         .route("/help", get(help_index))
         .route("/help/faqs", get(get_faqs))
@@ -292,6 +347,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             integration_service,
             compliance_service,
             monitoring_service,
+            analytics_service,
+            cache_service,
+            backup_service,
+            webhook_service,
         })
         // Apply gateway middleware for centralized routing and auth
         .layer(middleware::from_fn_with_state(
