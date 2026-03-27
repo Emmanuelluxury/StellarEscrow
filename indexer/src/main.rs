@@ -39,10 +39,14 @@ mod rate_limit_handlers;
 mod storage;
 mod websocket;
 mod performance_service;
+mod compliance_service;
+mod monitoring_service;
 
 #[cfg(test)]
 mod test;
 
+use compliance_service::ComplianceService;
+use monitoring_service::MonitoringService;
 use auth::auth_middleware;
 use config::Config;
 use database::Database;
@@ -50,8 +54,7 @@ use event_monitor::EventMonitor;
 use file_handlers::{delete_file, download_file, list_files, upload_file};
 use fraud_service::FraudDetectionService;
 use gateway::{GatewayConfig, GatewayState};
-use handlers::{AppState, *};
-use health::{liveness, HealthMonitor, HealthState};
+use handlers::{AppState, *};use health::{liveness, HealthMonitor, HealthState};
 use help::{
     get_contact, get_docs, get_faqs, get_tutorial_by_id, get_tutorials, help_index, search_help,
 };
@@ -197,6 +200,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let webhook_service = Arc::new(WebhookService::new(database.clone()));
     webhook_service.load_endpoints().await;
 
+    // Start alert evaluation loop in background
+    let monitoring_loop = monitoring_service.clone();
+    tokio::spawn(async move {
+        monitoring_loop.run_alert_loop().await;
+    });
+
     // Initialize event monitor
     let mut event_monitor = EventMonitor::new(
         config.stellar.clone(),
@@ -257,7 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/", get(api_index))
-        .route("/health", get(liveness))
+        .route("/health", get(health::env_health))
         .route("/health/live", get(liveness))
         .route("/status", get(get_status))
         .route("/stats", get(get_stats))
@@ -283,6 +292,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Performance monitoring
         .route("/performance/dashboard", get(get_performance_dashboard))
         .route("/performance/alerts", get(get_performance_alerts))
+        // Compliance
+        .route("/compliance/check", post(run_compliance_check))
+        .route("/compliance/status/:address", get(get_compliance_status))
+        .route("/compliance/review", post(review_compliance_check))
+        .route("/compliance/report", get(get_compliance_report))
+        // Monitoring
+        .route("/monitoring/dashboard", get(get_monitoring_dashboard))
+        .route("/monitoring/alerts", get(get_monitoring_alerts))
+        .route("/metrics", get(get_prometheus_metrics))
         // Integrations
         .route("/integrations/stats", get(get_integration_stats))
         .route("/integrations/log", get(get_integration_log))

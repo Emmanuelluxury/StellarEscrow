@@ -71,3 +71,20 @@ s3_bucket = ""
 retention_days = 30
 interval_hours = 24
 alert_webhook = ""
+[compliance]
+kyc_provider_url = ""
+kyc_api_key = ""
+aml_provider_url = ""
+aml_api_key = ""
+required_kyc_level = 1
+aml_risk_threshold = 70
+blocked_jurisdictions = []
+reporting_webhook_url = ""
+
+[monitoring]
+metrics_port = 9090
+alert_webhook_url = ""
+grafana_url = ""
+log_aggregation_url = ""
+incident_webhook_url = ""
+alert_eval_interval_secs = 30
