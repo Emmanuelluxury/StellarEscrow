@@ -8,10 +8,14 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::analytics_service::AnalyticsService;
+use crate::backup_service::BackupService;
+use crate::cache_service::CacheService;
 use crate::database::Database;
 use crate::error::AppError;
 use crate::fraud_service::FraudDetectionService;
 use crate::health::HealthState;
+use crate::webhook_service::WebhookService;
 use crate::models::{
     AuditQuery, DiscoveryQuery, Event, EventQuery, EventStats, GlobalSearchQuery,
     GlobalSearchResponse, HistoryQuery, IndexerStatus, NewAuditLog, PagedResponse,
@@ -381,6 +385,12 @@ pub struct AppState {
     pub gateway: Arc<crate::gateway::GatewayState>,
     pub performance_service: Arc<crate::performance_service::PerformanceService>,
     pub integration_service: Arc<crate::integration_service::IntegrationService>,
+    pub compliance_service: Arc<crate::compliance_service::ComplianceService>,
+    pub monitoring_service: Arc<crate::monitoring_service::MonitoringService>,
+    pub analytics_service: Arc<AnalyticsService>,
+    pub cache_service: Arc<CacheService>,
+    pub backup_service: Arc<BackupService>,
+    pub webhook_service: Arc<WebhookService>,
 }
 
 // =============================================================================
@@ -551,4 +561,187 @@ pub async fn get_performance_alerts(
         "active": dashboard.active_alerts,
         "total": dashboard.active_alerts.len(),
     }))
+}
+
+// =============================================================================
+// Analytics Handlers
+// =============================================================================
+
+/// GET /analytics/dashboard — full analytics dashboard.
+pub async fn get_analytics_dashboard(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let dash = state.analytics_service.get_dashboard().await
+        .map_err(|_| AppError::InternalServerError)?;
+    Ok(Json(serde_json::to_value(&dash).unwrap_or_default()))
+}
+
+/// GET /analytics/realtime — real-time in-memory stats (no DB).
+pub async fn get_analytics_realtime(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let window = state.analytics_service.get_realtime().await;
+    Json(serde_json::to_value(&window).unwrap_or_default())
+}
+
+#[derive(Deserialize)]
+pub struct ExportQuery {
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+    pub format: Option<String>,
+}
+
+/// GET /analytics/export — export analytics data as CSV or JSON.
+pub async fn export_analytics(
+    Query(params): Query<ExportQuery>,
+    State(state): State<AppState>,
+) -> Result<axum::response::Response<String>, AppError> {
+    use crate::analytics_service::export::ExportFormat;
+    use std::str::FromStr;
+
+    let from = params.from.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(30));
+    let to   = params.to.unwrap_or_else(chrono::Utc::now);
+    let fmt  = params.format.as_deref().and_then(|s| ExportFormat::from_str(s).ok())
+        .unwrap_or(ExportFormat::Json);
+
+    let is_csv = fmt == ExportFormat::Csv;
+    let body = state.analytics_service.export(from, to, fmt).await
+        .map_err(|_| AppError::InternalServerError)?;
+
+    let content_type = if is_csv { "text/csv" } else { "application/json" };
+    Ok(axum::response::Response::builder()
+        .status(200)
+        .header("Content-Type", content_type)
+        .header("Content-Disposition", if is_csv { "attachment; filename=analytics.csv" } else { "inline" })
+        .body(body)
+        .unwrap())
+}
+
+// =============================================================================
+// Cache Handlers
+// =============================================================================
+
+/// GET /cache/stats — cache hit/miss statistics.
+pub async fn get_cache_stats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.cache_service.get_stats_snapshot().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+#[derive(Deserialize)]
+pub struct CacheInvalidateRequest {
+    pub key: Option<String>,
+    pub pattern: Option<String>,
+}
+
+/// POST /cache/invalidate — manually invalidate a cache key or pattern.
+pub async fn invalidate_cache(
+    State(state): State<AppState>,
+    Json(body): Json<CacheInvalidateRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if let Some(key) = body.key {
+        state.cache_service.invalidate(&key).await;
+        return Ok(Json(json!({ "invalidated": key })));
+    }
+    if let Some(pattern) = body.pattern {
+        state.cache_service.invalidate_pattern(&pattern).await;
+        return Ok(Json(json!({ "invalidated_pattern": pattern })));
+    }
+    Err(AppError::NotFound("Provide key or pattern".to_string()))
+}
+
+// =============================================================================
+// Backup Handlers
+// =============================================================================
+
+/// POST /backup/trigger — trigger an immediate backup.
+pub async fn trigger_backup(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let record = state.backup_service.run_backup().await;
+    Ok(Json(serde_json::to_value(&record).unwrap_or_default()))
+}
+
+/// GET /backup/status — backup monitoring snapshot.
+pub async fn get_backup_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let snapshot = state.backup_service.get_monitor_snapshot().await;
+    Json(serde_json::to_value(&snapshot).unwrap_or_default())
+}
+
+/// GET /backup/history — list recent backup records.
+pub async fn get_backup_history(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let records = state.backup_service.list_backups(20).await;
+    Json(serde_json::to_value(&records).unwrap_or_default())
+}
+
+/// GET /backup/recovery-plan — generate a recovery procedure document.
+pub async fn get_recovery_plan(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let snapshot = state.backup_service.get_monitor_snapshot().await;
+    let location = snapshot.last_backup.as_ref().and_then(|b| b.location.as_deref());
+    let plan = crate::backup_service::recovery::generate_recovery_plan(location);
+    Json(serde_json::to_value(&plan).unwrap_or_default())
+}
+
+// =============================================================================
+// Webhook Handlers
+// =============================================================================
+
+#[derive(Deserialize)]
+pub struct RegisterWebhookRequest {
+    pub url: String,
+    pub secret: String,
+    pub event_types: Option<Vec<String>>,
+}
+
+/// POST /webhooks — register a new webhook endpoint.
+pub async fn register_webhook(
+    State(state): State<AppState>,
+    Json(body): Json<RegisterWebhookRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let endpoint = state.webhook_service
+        .register(body.url, body.secret, body.event_types.unwrap_or_default())
+        .await
+        .map_err(|e| AppError::NotFound(e.to_string()))?;
+    Ok(Json(serde_json::to_value(&endpoint).unwrap_or_default()))
+}
+
+/// GET /webhooks — list all registered webhook endpoints.
+pub async fn list_webhooks(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let endpoints = state.webhook_service.get_endpoints().await;
+    Json(serde_json::to_value(&endpoints).unwrap_or_default())
+}
+
+/// DELETE /webhooks/:id — deactivate a webhook endpoint.
+pub async fn deactivate_webhook(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state.webhook_service.deactivate(id).await
+        .map_err(|e| AppError::NotFound(e.to_string()))?;
+    Ok(Json(json!({ "deactivated": id })))
+}
+
+/// GET /webhooks/deliveries — recent delivery log.
+pub async fn get_webhook_deliveries(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let log = state.webhook_service.get_delivery_log(50).await;
+    Json(serde_json::to_value(&log).unwrap_or_default())
+}
+
+/// GET /webhooks/stats — webhook delivery statistics.
+pub async fn get_webhook_stats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.webhook_service.get_stats().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
 }

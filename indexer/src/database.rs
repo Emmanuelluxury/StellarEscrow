@@ -1101,3 +1101,253 @@ impl Database {
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
 }
+
+// =============================================================================
+// Analytics Operations
+// =============================================================================
+
+impl Database {
+    pub async fn insert_analytics_event(
+        &self,
+        event_type: &str,
+        data: &serde_json::Value,
+        ledger: i64,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "INSERT INTO analytics_events (event_type, data, ledger) VALUES ($1, $2, $3)"
+        )
+        .bind(event_type)
+        .bind(data)
+        .bind(ledger)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_analytics_events_in_range(
+        &self,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::analytics_service::export::AnalyticsRow>, AppError> {
+        let rows = sqlx::query(
+            "SELECT event_type, ledger, data, recorded_at FROM analytics_events WHERE recorded_at >= $1 AND recorded_at <= $2 ORDER BY recorded_at DESC LIMIT 10000"
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| crate::analytics_service::export::AnalyticsRow {
+            event_type: r.get("event_type"),
+            ledger: r.get("ledger"),
+            data: r.get("data"),
+            recorded_at: r.get("recorded_at"),
+        }).collect())
+    }
+
+    pub async fn get_trade_stats(&self) -> Result<crate::analytics_service::TradeStats, AppError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*) FILTER (WHERE event_type = 'trade_created') AS total_trades,
+                COALESCE(SUM((data->>'amount')::BIGINT) FILTER (WHERE event_type = 'trade_created'), 0) AS total_volume,
+                COUNT(*) FILTER (WHERE event_type = 'trade_confirmed') AS completed_trades,
+                COUNT(*) FILTER (WHERE event_type = 'dispute_raised') AS disputed_trades,
+                COUNT(*) FILTER (WHERE event_type = 'trade_cancelled') AS cancelled_trades
+            FROM events
+            "#
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let total: i64 = row.get("total_trades");
+        let completed: i64 = row.get("completed_trades");
+        let disputed: i64 = row.get("disputed_trades");
+        let cancelled: i64 = row.get("cancelled_trades");
+        let volume: i64 = row.get("total_volume");
+
+        let terminal = completed + cancelled + disputed;
+        let success_rate_bps = if terminal > 0 { (completed * 10_000 / terminal) as u32 } else { 0 };
+        let dispute_rate_bps = if total > 0 { (disputed * 10_000 / total) as u32 } else { 0 };
+        let avg = if total > 0 { volume as f64 / total as f64 } else { 0.0 };
+
+        Ok(crate::analytics_service::TradeStats {
+            total_trades: total as u64,
+            total_volume: volume as u64,
+            completed_trades: completed as u64,
+            disputed_trades: disputed as u64,
+            cancelled_trades: cancelled as u64,
+            avg_trade_amount: avg,
+            success_rate_bps,
+            dispute_rate_bps,
+        })
+    }
+
+    pub async fn get_user_behavior(&self) -> Result<crate::analytics_service::UserBehavior, AppError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(DISTINCT data->>'seller') AS unique_sellers,
+                COUNT(DISTINCT data->>'buyer') AS unique_buyers
+            FROM events WHERE event_type = 'trade_created'
+            "#
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let sellers: i64 = row.get("unique_sellers");
+        let buyers: i64 = row.get("unique_buyers");
+        let total_users = (sellers + buyers).max(1);
+        let total_trades: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE event_type = 'trade_created'"
+        ).fetch_one(&self.pool).await?;
+
+        Ok(crate::analytics_service::UserBehavior {
+            unique_sellers: sellers as u64,
+            unique_buyers: buyers as u64,
+            repeat_traders: 0, // computed separately if needed
+            avg_trades_per_user: total_trades as f64 / total_users as f64,
+        })
+    }
+
+    pub async fn get_platform_metrics(&self) -> Result<crate::analytics_service::PlatformMetrics, AppError> {
+        let total_events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+            .fetch_one(&self.pool).await?;
+        let active_trades: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT data->>'trade_id') FROM events WHERE event_type = 'trade_created'"
+        ).fetch_one(&self.pool).await.unwrap_or(0);
+
+        Ok(crate::analytics_service::PlatformMetrics {
+            events_per_minute: 0.0, // computed from real-time aggregator
+            active_trades: active_trades as u64,
+            total_fees_collected: 0,
+            websocket_connections: 0,
+            api_requests_per_minute: 0.0,
+        })
+    }
+}
+
+// =============================================================================
+// Backup Operations
+// =============================================================================
+
+impl Database {
+    pub async fn insert_backup_record(
+        &self,
+        record: &crate::backup_service::BackupRecord,
+    ) -> Result<(), AppError> {
+        let status = format!("{:?}", record.status).to_lowercase();
+        sqlx::query(
+            "INSERT INTO backup_records (id, started_at, status, verified) VALUES ($1, $2, $3, $4)"
+        )
+        .bind(record.id)
+        .bind(record.started_at)
+        .bind(&status)
+        .bind(record.verified)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_backup_record(
+        &self,
+        record: &crate::backup_service::BackupRecord,
+    ) -> Result<(), AppError> {
+        let status = format!("{:?}", record.status).to_lowercase();
+        sqlx::query(
+            r#"UPDATE backup_records SET
+                completed_at = $1, status = $2, size_bytes = $3,
+                location = $4, checksum = $5, error = $6, verified = $7
+               WHERE id = $8"#
+        )
+        .bind(record.completed_at)
+        .bind(&status)
+        .bind(record.size_bytes.map(|s| s as i64))
+        .bind(&record.location)
+        .bind(&record.checksum)
+        .bind(&record.error)
+        .bind(record.verified)
+        .bind(record.id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Webhook Operations
+// =============================================================================
+
+impl Database {
+    pub async fn get_webhook_endpoints(&self) -> Result<Vec<crate::webhook_service::WebhookEndpoint>, AppError> {
+        let rows = sqlx::query(
+            "SELECT id, url, secret, event_types, active, created_at, failure_count FROM webhook_endpoints ORDER BY created_at DESC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| {
+            let event_types_json: serde_json::Value = r.get("event_types");
+            let event_types: Vec<String> = serde_json::from_value(event_types_json).unwrap_or_default();
+            crate::webhook_service::WebhookEndpoint {
+                id: r.get("id"),
+                url: r.get("url"),
+                secret: r.get("secret"),
+                event_types,
+                active: r.get("active"),
+                created_at: r.get("created_at"),
+                failure_count: r.get::<i32, _>("failure_count") as u32,
+            }
+        }).collect())
+    }
+
+    pub async fn insert_webhook_endpoint(
+        &self,
+        ep: &crate::webhook_service::WebhookEndpoint,
+    ) -> Result<(), anyhow::Error> {
+        let event_types = serde_json::to_value(&ep.event_types)?;
+        sqlx::query(
+            "INSERT INTO webhook_endpoints (id, url, secret, event_types, active, created_at, failure_count) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        )
+        .bind(ep.id)
+        .bind(&ep.url)
+        .bind(&ep.secret)
+        .bind(&event_types)
+        .bind(ep.active)
+        .bind(ep.created_at)
+        .bind(ep.failure_count as i32)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn deactivate_webhook_endpoint(&self, id: Uuid) -> Result<(), anyhow::Error> {
+        sqlx::query("UPDATE webhook_endpoints SET active = false WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn insert_webhook_delivery(
+        &self,
+        record: &crate::webhook_service::WebhookDeliveryRecord,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "INSERT INTO webhook_deliveries (id, endpoint_id, event_type, payload, status_code, success, attempt, error, delivered_at, duration_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"
+        )
+        .bind(record.id)
+        .bind(record.endpoint_id)
+        .bind(&record.event_type)
+        .bind(&record.payload)
+        .bind(record.status_code.map(|c| c as i32))
+        .bind(record.success)
+        .bind(record.attempt as i32)
+        .bind(&record.error)
+        .bind(record.delivered_at)
+        .bind(record.duration_ms as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
