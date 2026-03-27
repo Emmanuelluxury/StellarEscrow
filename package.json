@@ -22,5 +22,6 @@
     "security",
     "testing/regression",
     "testing/uat"
+    "tests"
   ]
 }
