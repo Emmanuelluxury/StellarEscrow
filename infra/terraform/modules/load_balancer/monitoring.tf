@@ -59,7 +59,6 @@ resource "aws_cloudwatch_metric_alarm" "alb_latency_p99" {
   metric_name        = "TargetResponseTime"
   dimensions         = { LoadBalancer = aws_lb.main.arn_suffix }
   period             = 60
-  statistic          = "p99"
   extended_statistic = "p99"
 
   alarm_actions = local.alarm_actions
