@@ -1,7 +1,8 @@
 import { rest } from 'msw';
 import { setupServer } from 'msw/node';
+import { Event, Trade } from './models';
 
-const mockTrades = [
+const initialTrades: Trade[] = [
   {
     id: '1',
     seller: 'GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIYU2IYJJMTEN4D7NOXVJPPJNBE',
@@ -12,7 +13,7 @@ const mockTrades = [
   },
 ];
 
-const mockEvents = [
+const initialEvents: Event[] = [
   {
     id: '1',
     type: 'trade_created',
@@ -21,6 +22,31 @@ const mockEvents = [
     data: {},
   },
 ];
+
+let mockTrades: Trade[] = [];
+let mockEvents: Event[] = [];
+let txCounter = 0;
+
+function cloneTrades(): Trade[] {
+  return initialTrades.map((trade) => ({ ...trade }));
+}
+
+function cloneEvents(): Event[] {
+  return initialEvents.map((event) => ({ ...event, data: { ...event.data } }));
+}
+
+function nextTxHash(): string {
+  txCounter += 1;
+  return `0xtx${txCounter.toString().padStart(4, '0')}`;
+}
+
+export function resetMockData() {
+  mockTrades = cloneTrades();
+  mockEvents = cloneEvents();
+  txCounter = 0;
+}
+
+resetMockData();
 
 export const handlers = [
   // Trades
@@ -57,7 +83,9 @@ export const handlers = [
   // Events
   rest.get('/api/events', (req, res, ctx) => {
     const limit = req.url.searchParams.get('limit') || '100';
-    return res(ctx.json(mockEvents.slice(0, parseInt(limit))));
+    const tradeId = req.url.searchParams.get('tradeId');
+    const filtered = tradeId ? mockEvents.filter((event) => event.tradeId === tradeId) : mockEvents;
+    return res(ctx.json(filtered.slice(0, parseInt(limit))));
   }),
 
   rest.get('/api/events/trade/:tradeId', (req, res, ctx) => {
@@ -72,15 +100,15 @@ export const handlers = [
 
   // Blockchain
   rest.post('/api/blockchain/fund', (req, res, ctx) => {
-    return res(ctx.json({ txHash: '0x' + Math.random().toString(16).slice(2) }));
+    return res(ctx.json({ txHash: nextTxHash() }));
   }),
 
   rest.post('/api/blockchain/complete', (req, res, ctx) => {
-    return res(ctx.json({ txHash: '0x' + Math.random().toString(16).slice(2) }));
+    return res(ctx.json({ txHash: nextTxHash() }));
   }),
 
   rest.post('/api/blockchain/resolve', (req, res, ctx) => {
-    return res(ctx.json({ txHash: '0x' + Math.random().toString(16).slice(2) }));
+    return res(ctx.json({ txHash: nextTxHash() }));
   }),
 
   rest.get('/api/blockchain/tx/:txHash', (req, res, ctx) => {
