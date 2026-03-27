@@ -2,21 +2,23 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{FromRef, State},
+    middleware,
     response::Json,
     routing::{delete, get, post},
-    extract::FromRef,
-    middleware,
-    routing::{delete, get, post},
-    routing::{get, post},
     Router,
 };
 use clap::Parser;
-use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
+mod analytics_service;
+mod backup_service;
+mod cache_service;
+mod compliance_service;
+mod monitoring_service;
+mod webhook_service;
 mod auth;
 mod cache;
 mod config;
@@ -24,39 +26,51 @@ mod database;
 mod error;
 mod event_monitor;
 mod file_handlers;
+mod fraud_service;
 mod gateway;
 mod handlers;
 mod health;
 mod help;
+mod integration_service;
 mod models;
+mod notification_service;
 mod rate_limit;
 mod rate_limit_handlers;
 mod storage;
 mod websocket;
-mod fraud_service;
-mod notification_service;
+mod performance_service;
+mod compliance_service;
+mod monitoring_service;
 
 #[cfg(test)]
 mod test;
 
+use compliance_service::ComplianceService;
+use monitoring_service::MonitoringService;
+use auth::auth_middleware;
 use config::Config;
 use database::Database;
 use event_monitor::EventMonitor;
-use auth::auth_middleware;
-use gateway::{GatewayConfig, GatewayState};
-use handlers::{AppState, *};
-use health::{alerts, liveness, metrics, readiness, status_page, HealthMonitor, HealthState};
 use file_handlers::{delete_file, download_file, list_files, upload_file};
-use handlers::*;
+use fraud_service::FraudDetectionService;
+use gateway::{GatewayConfig, GatewayState};
+use handlers::{AppState, *};use health::{liveness, HealthMonitor, HealthState};
+use help::{
+    get_contact, get_docs, get_faqs, get_tutorial_by_id, get_tutorials, help_index, search_help,
+};
+use integration_service::IntegrationService;
+use notification_service::NotificationService;
+use performance_service::PerformanceService;
 use rate_limit::RateLimiter;
 use rate_limit_handlers::*;
 use storage::StorageService;
 use websocket::WebSocketManager;
-use help::{
-    get_contact, get_docs, get_faqs, get_tutorial_by_id, get_tutorials, help_index, search_help,
-};
-use fraud_service::FraudDetectionService;
-use notification_service::NotificationService;
+use analytics_service::AnalyticsService;
+use backup_service::BackupService;
+use cache_service::CacheService;
+use compliance_service::ComplianceService;
+use monitoring_service::MonitoringService;
+use webhook_service::WebhookService;
 
 #[derive(Parser)]
 #[command(name = "stellar-escrow-indexer")]
@@ -81,10 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load(&args.config)?;
     info!(
         "Loaded configuration from {} | env={} version={} schema_v={}",
-        args.config,
-        config.meta.environment,
-        config.meta.version,
-        config.meta.schema_version,
+        args.config, config.meta.environment, config.meta.version, config.meta.schema_version,
     );
 
     // Initialize database with tuned connection pool
@@ -118,10 +129,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize rate limiter
     let rate_limiter = Arc::new(RateLimiter::new(config.rate_limit.clone()));
-    
+
     // Initialize API auth config
     let auth_config = Arc::new(config.auth.clone());
-    
+
     // Initialize API gateway configuration
     // Gateway provides centralized routing, load balancing, and authentication
     let gateway_config = GatewayConfig {
@@ -131,11 +142,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         transform_responses: true,
     };
     let gateway_state = Arc::new(GatewayState::new(gateway_config, auth_config.clone()));
-    
+
     // Initialize file storage service
-    let storage_service = Arc::new(
-        StorageService::new(db_pool, &config.storage.base_dir).await?,
-    );
+    let storage_service = Arc::new(StorageService::new(db_pool, &config.storage.base_dir).await?);
     // Initialize Fraud Detection Service
     let fraud_service = Arc::new(FraudDetectionService::new(database.clone()).await);
 
@@ -145,13 +154,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.notification.clone(),
     ));
 
+    // Initialize Performance Monitoring Service
+    let performance_service = Arc::new(PerformanceService::new(database.clone()));
+    // Initialize Integration Service
+    let integration_service = Arc::new(IntegrationService::new(
+        database.clone(),
+        config.integration.clone(),
+    ));
+
+    // Initialize Compliance Service
+    let compliance_service = Arc::new(ComplianceService::new(
+        database.clone(),
+        config.compliance.clone(),
+    ));
+
+    // Initialize Monitoring Service
+    let monitoring_service = Arc::new(MonitoringService::new(
+        database.clone(),
+        config.monitoring.clone(),
+    ));
+    let monitoring_loop = monitoring_service.clone();
+    tokio::spawn(async move { monitoring_loop.run_alert_loop().await; });
+
+    // Initialize Analytics Service
+    let analytics_service = Arc::new(AnalyticsService::new(
+        database.clone(),
+        config.analytics.clone(),
+    ));
+
+    // Initialize Cache Service
+    let cache_service = Arc::new(CacheService::new(config.cache.clone()).await);
+
+    // Initialize Backup Service
+    let mut backup_config = config.backup.clone();
+    if backup_config.database_url.is_empty() {
+        backup_config.database_url = config.database.url.clone();
+    }
+    let backup_service = Arc::new(BackupService::new(database.clone(), backup_config));
+    if config.backup.interval_hours > 0 {
+        let sched = backup_service.clone();
+        tokio::spawn(async move { sched.run_scheduler().await; });
+    }
+
+    // Initialize Webhook Service
+    let webhook_service = Arc::new(WebhookService::new(database.clone()));
+    webhook_service.load_endpoints().await;
+
+    // Start alert evaluation loop in background
+    let monitoring_loop = monitoring_service.clone();
+    tokio::spawn(async move {
+        monitoring_loop.run_alert_loop().await;
+    });
+
     // Initialize event monitor
-    let event_monitor = EventMonitor::new(
+    let mut event_monitor = EventMonitor::new(
         config.stellar.clone(),
         database.clone(),
         ws_manager.clone(),
         fraud_service.clone(),
         notification_service.clone(),
+        integration_service.clone(),
     );
 
     // Start event monitoring in background
@@ -164,8 +226,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build application with routes
     let admin_router = Router::new()
         .route("/admin/rate-limits", get(get_rate_limit_stats))
-        .route("/admin/rate-limits/whitelist", post(add_to_whitelist).delete(remove_from_whitelist))
-        .route("/admin/rate-limits/blacklist", post(add_to_blacklist).delete(remove_from_blacklist))
+        .route(
+            "/admin/rate-limits/whitelist",
+            post(add_to_whitelist).delete(remove_from_whitelist),
+        )
+        .route(
+            "/admin/rate-limits/blacklist",
+            post(add_to_blacklist).delete(remove_from_blacklist),
+        )
         .route("/admin/rate-limits/tier", post(set_ip_tier))
         .with_state(rate_limiter.clone());
     let file_router = Router::new()
@@ -198,13 +266,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/", get(api_index))
-        .route("/health", get(liveness))
+        .route("/health", get(health::env_health))
         .route("/health/live", get(liveness))
-        .route("/health/ready", get(readiness))
-        .route("/health/metrics", get(metrics))
-        .route("/health/alerts", get(alerts))
-        .route("/status", get(status_page))
-        .route("/health", get(health_check))
         .route("/status", get(get_status))
         .route("/stats", get(get_stats))
         .route("/events", get(get_events))
@@ -221,8 +284,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/fraud/alerts", get(get_fraud_alerts))
         .route("/fraud/review", post(update_fraud_review))
         // Notifications
-        .route("/notifications/preferences/:address", get(get_notification_preferences).put(upsert_notification_preferences))
+        .route(
+            "/notifications/preferences/:address",
+            get(get_notification_preferences).put(upsert_notification_preferences),
+        )
         .route("/notifications/log/:address", get(get_notification_log))
+        // Performance monitoring
+        .route("/performance/dashboard", get(get_performance_dashboard))
+        .route("/performance/alerts", get(get_performance_alerts))
+        // Compliance
+        .route("/compliance/check", post(run_compliance_check))
+        .route("/compliance/status/:address", get(get_compliance_status))
+        .route("/compliance/review", post(review_compliance_check))
+        .route("/compliance/report", get(get_compliance_report))
+        // Monitoring
+        .route("/monitoring/dashboard", get(get_monitoring_dashboard))
+        .route("/monitoring/alerts", get(get_monitoring_alerts))
+        .route("/metrics", get(get_prometheus_metrics))
+        // Integrations
+        .route("/integrations/stats", get(get_integration_stats))
+        .route("/integrations/log", get(get_integration_log))
+        // Analytics
+        .route("/analytics/dashboard", get(get_analytics_dashboard))
+        .route("/analytics/realtime", get(get_analytics_realtime))
+        .route("/analytics/export", get(export_analytics))
+        // Cache
+        .route("/cache/stats", get(get_cache_stats))
+        .route("/cache/invalidate", post(invalidate_cache))
+        // Backup
+        .route("/backup/trigger", post(trigger_backup))
+        .route("/backup/status", get(get_backup_status))
+        .route("/backup/history", get(get_backup_history))
+        .route("/backup/recovery-plan", get(get_recovery_plan))
+        // Webhooks
+        .route("/webhooks", post(register_webhook).get(list_webhooks))
+        .route("/webhooks/:id", delete(deactivate_webhook))
+        .route("/webhooks/deliveries", get(get_webhook_deliveries))
+        .route("/webhooks/stats", get(get_webhook_stats))
         .route("/ws", get(ws_handler))
         .route("/help", get(help_index))
         .route("/help/faqs", get(get_faqs))
@@ -245,11 +343,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fraud_service,
             notification_service,
             gateway: gateway_state.clone(),
+            performance_service,
+            integration_service,
+            compliance_service,
+            monitoring_service,
+            analytics_service,
+            cache_service,
+            backup_service,
+            webhook_service,
         })
         // Apply gateway middleware for centralized routing and auth
-        .layer(middleware::from_fn_with_state(gateway_state.clone(), gateway::gateway_middleware))
+        .layer(middleware::from_fn_with_state(
+            gateway_state.clone(),
+            gateway::gateway_middleware,
+        ))
         // Apply rate limiting middleware
-        .layer(middleware::from_fn_with_state(rate_limiter, rate_limit_middleware))
+        .layer(middleware::from_fn_with_state(
+            rate_limiter,
+            rate_limit_middleware,
+        ))
         .layer(CorsLayer::permissive());
 
     // Start server
@@ -257,7 +369,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     // Wait for monitor to finish (shouldn't happen in normal operation)
     monitor_handle.await?;
