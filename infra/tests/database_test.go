@@ -29,29 +29,20 @@ func TestDatabaseModulePlan(t *testing.T) {
 			}
 
 			planOutput := terraform.InitAndPlanAndShowWithStruct(t, opts)
-			resources := planOutput.RawPlan.PlannedValues.RootModule.Resources
+			resources := planOutput.ResourcePlannedValuesMap
 
-			// Primary instance always present
 			assert.Contains(t, resources, "module.database.aws_db_instance.primary",
 				"Primary RDS instance must be in plan")
-
-			// Parameter group always present
 			assert.Contains(t, resources, "module.database.aws_db_parameter_group.main",
 				"Parameter group must be in plan")
-
-			// Enhanced monitoring IAM role always present
 			assert.Contains(t, resources, "module.database.aws_iam_role.rds_enhanced_monitoring",
 				"Enhanced monitoring IAM role must be in plan")
-
-			// CloudWatch alarms always present
 			assert.Contains(t, resources, "module.database.aws_cloudwatch_metric_alarm.cpu_high",
 				"CPU alarm must be in plan")
 			assert.Contains(t, resources, "module.database.aws_cloudwatch_metric_alarm.free_storage_low",
 				"Free storage alarm must be in plan")
 			assert.Contains(t, resources, "module.database.aws_cloudwatch_metric_alarm.connections_high",
 				"Connections alarm must be in plan")
-
-			// Dashboard always present
 			assert.Contains(t, resources, "module.database.aws_cloudwatch_dashboard.db",
 				"Database dashboard must be in plan")
 		})
@@ -74,13 +65,11 @@ func TestDatabaseReplicaInProduction(t *testing.T) {
 	}
 
 	prodPlan := terraform.InitAndPlanAndShowWithStruct(t, prodOpts)
-	assert.Contains(t, prodPlan.RawPlan.PlannedValues.RootModule.Resources,
-		"module.database.aws_db_instance.replica[0]",
-		"Read replica must be planned for production")
+	resources := prodPlan.ResourcePlannedValuesMap
 
-	// Replica lag alarm must also be planned for production
-	assert.Contains(t, prodPlan.RawPlan.PlannedValues.RootModule.Resources,
-		"module.database.aws_cloudwatch_metric_alarm.replica_lag[0]",
+	assert.Contains(t, resources, "module.database.aws_db_instance.replica[0]",
+		"Read replica must be planned for production")
+	assert.Contains(t, resources, "module.database.aws_cloudwatch_metric_alarm.replica_lag[0]",
 		"Replica lag alarm must be planned for production")
 }
 
@@ -100,15 +89,13 @@ func TestDatabaseMultiAZInProduction(t *testing.T) {
 	}
 
 	planOutput := terraform.InitAndPlanAndShowWithStruct(t, opts)
-	resources := planOutput.RawPlan.PlannedValues.RootModule.Resources
+	resources := planOutput.ResourcePlannedValuesMap
 
 	primary, ok := resources["module.database.aws_db_instance.primary"]
 	if assert.True(t, ok, "Primary RDS instance must be in plan") {
-		multiAZ := primary.AttributeValues["multi_az"]
-		assert.Equal(t, true, multiAZ, "multi_az must be true in production")
-
-		backupRetention := primary.AttributeValues["backup_retention_period"]
-		assert.Equal(t, float64(14), backupRetention,
+		assert.Equal(t, true, primary.AttributeValues["multi_az"],
+			"multi_az must be true in production")
+		assert.Equal(t, float64(14), primary.AttributeValues["backup_retention_period"],
 			"backup_retention_period must be 14 days in production")
 	}
 }
