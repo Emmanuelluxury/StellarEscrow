@@ -9,6 +9,7 @@ mod oracle;
 mod privacy;
 mod queries;
 mod reputation;
+mod social;
 mod storage;
 mod subscription;
 mod templates;
