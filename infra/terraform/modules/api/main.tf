@@ -183,11 +183,11 @@ resource "aws_ecs_task_definition" "api" {
     }]
 
     environment = [
-      { name = "NODE_ENV", value = var.environment },
-      { name = "PORT", value = tostring(var.container_port) },
-      { name = "STELLAR_ESCROW__STELLAR__NETWORK", value = var.stellar_network },
-      { name = "STELLAR_ESCROW__STELLAR__CONTRACT_ID", value = var.stellar_contract_id },
-      { name = "STELLAR_ESCROW__STELLAR__HORIZON_URL", value = var.stellar_horizon_url },
+      { name = "NODE_ENV",                                value = var.environment },
+      { name = "PORT",                                    value = tostring(var.container_port) },
+      { name = "STELLAR_ESCROW__STELLAR__NETWORK",        value = var.stellar_network },
+      { name = "STELLAR_ESCROW__STELLAR__CONTRACT_ID",    value = var.stellar_contract_id },
+      { name = "STELLAR_ESCROW__STELLAR__HORIZON_URL",    value = var.stellar_horizon_url },
     ]
 
     secrets = [
@@ -213,7 +213,7 @@ resource "aws_ecs_task_definition" "api" {
   }])
 }
 
-# ECS Service
+# ECS Service — security group and target group come from the load_balancer module
 resource "aws_ecs_service" "api" {
   name            = "${var.name_prefix}-api"
   cluster         = aws_ecs_cluster.main.id
@@ -223,12 +223,12 @@ resource "aws_ecs_service" "api" {
 
   network_configuration {
     subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.api.id]
+    security_groups  = [var.ecs_security_group_id]
     assign_public_ip = false
   }
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.api.arn
+    target_group_arn = var.api_target_group_arn
     container_name   = "api"
     container_port   = var.container_port
   }
